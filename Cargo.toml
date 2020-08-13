@@ -1,0 +1,11 @@
+[package]
+name = "wgpu"
+version = "0.1.0"
+authors = ["Chris Patuzzo <chris@patuzzo.co.uk>"]
+edition = "2018"
+
+[dependencies]
+futures = "0.3.5"
+shaderc = "0.6.2"
+winit = "0.21.0"
+wgpu = "0.5.2"
