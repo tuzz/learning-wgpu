@@ -1,6 +1,7 @@
+use bytemuck::cast_slice;
 use futures::executor::block_on;
 use shaderc::{Compiler, ShaderKind::{Fragment, Vertex}};
-use std::io::Cursor;
+use std::{io::Cursor, mem};
 
 use wgpu::{
     Adapter, BackendBit, Color, CommandEncoder, CommandEncoderDescriptor,
@@ -11,7 +12,8 @@ use wgpu::{
     read_spirv, RenderPipelineDescriptor, ProgrammableStageDescriptor,
     RasterizationStateDescriptor, FrontFace, CullMode, ColorStateDescriptor,
     PrimitiveTopology, BlendDescriptor, ColorWrite, VertexStateDescriptor,
-    IndexFormat, RenderPipeline
+    IndexFormat, RenderPipeline, BufferUsage, VertexBufferDescriptor, Buffer,
+    InputStepMode, VertexFormat, BufferAddress, VertexAttributeDescriptor,
 };
 
 use winit::{
@@ -21,6 +23,22 @@ use winit::{
     window::{Window, WindowBuilder},
 };
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+struct Point {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+unsafe impl bytemuck::Pod for Point {}
+unsafe impl bytemuck::Zeroable for Point {}
+
+const POINTS: &[Point] = &[
+    Point { position: [0.0, 0.5, 0.0], color: [1.0, 0.0, 0.0] },
+    Point { position: [-0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0] },
+    Point { position: [0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0] },
+];
+
 fn main() {
     let event_loop = create_event_loop();
     let window = create_window(&event_loop);
@@ -29,13 +47,14 @@ fn main() {
     let adapter = request_adapter(&surface);
     let (device, queue) = request_device(&adapter);
     let mut swap_chain = create_swap_chain(&size, &surface, &device);
+    let (buffer, descriptor) = create_buffer(&device);
     let (vert, frag) = compile_shaders();
-    let pipeline = create_render_pipeline(&device, &vert, &frag);
+    let pipeline = create_render_pipeline(&device, &vert, &frag, descriptor);
 
     event_loop.run(move |event, _, control_flow| {
         match event {
             Event::RedrawRequested(_) => {
-                render_frame(&device, &queue, &mut swap_chain, &pipeline);
+                render_frame(&device, &queue, &mut swap_chain, &buffer, &pipeline);
             },
             Event::MainEventsCleared => {
                 window.request_redraw();
@@ -99,6 +118,29 @@ fn create_swap_chain(window_size: &PhysicalSize<u32>, surface: &Surface, device:
     device.create_swap_chain(surface, &descriptor)
 }
 
+fn create_buffer(device: &Device) -> (Buffer, VertexBufferDescriptor) {
+    let buffer = device.create_buffer_with_data(cast_slice(POINTS), BufferUsage::VERTEX);
+
+    let descriptor = VertexBufferDescriptor {
+        stride: mem::size_of::<Point>() as wgpu::BufferAddress,
+        step_mode: InputStepMode::Vertex,
+        attributes: &[
+            VertexAttributeDescriptor {
+                offset: 0,
+                shader_location: 0,
+                format: VertexFormat::Float3,
+            },
+            VertexAttributeDescriptor {
+                offset: mem::size_of::<[f32; 3]>() as BufferAddress,
+                shader_location: 1,
+                format: VertexFormat::Float3,
+            },
+        ],
+    };
+
+    (buffer, descriptor)
+}
+
 fn compile_shaders() -> (Vec<u32>, Vec<u32>) {
     let mut compiler = Compiler::new().unwrap();
 
@@ -113,7 +155,7 @@ fn compile_shaders() -> (Vec<u32>, Vec<u32>) {
     (vert, frag)
 }
 
-fn create_render_pipeline(device: &Device, vert: &[u32], frag: &[u32]) -> RenderPipeline {
+fn create_render_pipeline(device: &Device, vert: &[u32], frag: &[u32], buffer_descriptor: VertexBufferDescriptor) -> RenderPipeline {
     let layout_descriptor = PipelineLayoutDescriptor { bind_group_layouts: &[] };
     let layout = &device.create_pipeline_layout(&layout_descriptor);
 
@@ -140,7 +182,7 @@ fn create_render_pipeline(device: &Device, vert: &[u32], frag: &[u32]) -> Render
 
     let vertex_state = VertexStateDescriptor {
         index_format: IndexFormat::Uint16,
-        vertex_buffers: &[],
+        vertex_buffers: &[buffer_descriptor],
     };
 
     device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -158,13 +200,14 @@ fn create_render_pipeline(device: &Device, vert: &[u32], frag: &[u32]) -> Render
     })
 }
 
-fn render_frame(device: &Device, queue: &Queue, mut swap_chain: &mut SwapChain, pipeline: &RenderPipeline) {
+fn render_frame(device: &Device, queue: &Queue, mut swap_chain: &mut SwapChain, buffer: &Buffer, pipeline: &RenderPipeline) {
     let frame = next_frame(&mut swap_chain);
     let mut encoder = command_encoder(&device);
     let mut render_pass = begin_render_pass(&mut encoder, &frame);
 
     render_pass.set_pipeline(&pipeline);
-    render_pass.draw(0..3, 0..1);
+    render_pass.set_vertex_buffer(0, &buffer, 0, 0);
+    render_pass.draw(0..POINTS.len() as u32, 0..1);
 
     drop(render_pass);
     queue.submit(&[encoder.finish()]);
